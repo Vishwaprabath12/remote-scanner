@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote QR & Barcode Scanner</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PeerJS for PC-to-Phone Real-time Connection -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- QRCode.js for Generating Pairing QR -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- Html5-QRCode for Scanning QR & Barcodes -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+        #qrcode img { margin: 0 auto; border-radius: 8px; border: 8px solid white; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="w-full max-w-md bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 p-6">
+        <!-- Header -->
+        <div class="text-center mb-6">
+            <h1 class="text-2xl font-bold text-emerald-400">Remote Scanner Bridge</h1>
+            <p class="text-xs text-slate-400 mt-1">Use your phone as a wireless scanner for your PC</p>
+        </div>
+
+        <!-- Mode Selection (Initial View) -->
+        <div id="mode-selection" class="space-y-4">
+            <button onclick="startDesktopMode()" class="w-full py-4 px-6 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 rounded-xl font-semibold text-lg transition flex items-center justify-center gap-3 shadow-lg">
+                <span>🖥️</span> Add Scanner (Desktop Mode)
+            </button>
+            
+            <button onclick="startMobileMode()" class="w-full py-4 px-6 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 rounded-xl font-semibold text-lg transition flex items-center justify-center gap-3 shadow-lg">
+                <span>📱</span> Add QR Backend (Phone Mode)
+            </button>
+        </div>
+
+        <!-- DESKTOP VIEW -->
+        <div id="desktop-view" class="hidden space-y-5">
+            <div class="flex justify-between items-center bg-slate-900/60 p-3 rounded-lg border border-slate-700">
+                <span class="text-sm text-slate-300">Status:</span>
+                <span id="pc-status" class="text-xs font-bold px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-400">Waiting for Phone...</span>
+            </div>
+
+            <!-- Pairing QR Area -->
+            <div id="qr-container" class="bg-slate-900 p-5 rounded-xl text-center border border-slate-700">
+                <p class="text-sm text-slate-300 mb-3">Scan this QR code with your phone:</p>
+                <div id="qrcode" class="flex justify-center"></div>
+                <p id="peer-id-display" class="text-xs text-slate-500 mt-3 font-mono"></p>
+            </div>
+
+            <!-- Scanned Results List -->
+            <div class="space-y-2">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-sm font-semibold text-slate-300">Scanned Codes (<span id="scan-count">0</span>)</h2>
+                    <button onclick="clearHistory()" class="text-xs text-rose-400 hover:underline">Clear</button>
+                </div>
+                <div id="scanned-list" class="bg-slate-900 rounded-xl p-3 h-56 overflow-y-auto space-y-2 border border-slate-700">
+                    <p id="empty-msg" class="text-xs text-slate-500 text-center mt-20">No barcodes scanned yet...</p>
+                </div>
+            </div>
+
+            <button onclick="location.reload()" class="w-full py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-slate-300">
+                ← Back to Menu
+            </button>
+        </div>
+
+        <!-- MOBILE VIEW -->
+        <div id="mobile-view" class="hidden space-y-4">
+            <div class="flex justify-between items-center bg-slate-900/60 p-3 rounded-lg border border-slate-700">
+                <span class="text-sm text-slate-300">Connection:</span>
+                <span id="mobile-status" class="text-xs font-bold px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-400">Scan PC QR Code</span>
+            </div>
+
+            <!-- Camera Viewfinder -->
+            <div class="overflow-hidden rounded-xl border-2 border-slate-600 bg-black">
+                <div id="reader" class="w-full"></div>
+            </div>
+
+            <div id="mobile-feedback" class="hidden p-3 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-sm text-center font-medium">
+                Sent to PC!
+            </div>
+
+            <button onclick="stopMobileScanner()" class="w-full py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-slate-300">
+                ← Disconnect & Back
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let peer = null;
+        let conn = null;
+        let html5QrcodeScanner = null;
+        let isPaired = false;
+        let lastScannedCode = "";
+        let lastScanTime = 0;
+        let scanCount = 0;
+
+        // ==========================================
+        // 1. DESKTOP MODE LOGIC
+        // ==========================================
+        function startDesktopMode() {
+            document.getElementById('mode-selection').classList.add('hidden');
+            document.getElementById('desktop-view').classList.remove('hidden');
+
+            // Initialize PeerJS
+            peer = new Peer();
+
+            peer.on('open', (id) => {
+                document.getElementById('peer-id-display').innerText = "ID: " + id;
+                // Generate QR Code containing the PC's Peer ID
+                new QRCode(document.getElementById("qrcode"), {
+                    text: "PAIR:" + id,
+                    width: 180,
+                    height: 180,
+                    colorDark : "#000000",
+                    colorLight : "#ffffff",
+                    correctLevel : QRCode.CorrectLevel.H
+                });
+            });
+
+            // Listen for incoming connection from Phone
+            peer.on('connection', (connection) => {
+                conn = connection;
+                
+                conn.on('open', () => {
+                    const statusEl = document.getElementById('pc-status');
+                    statusEl.innerText = "● Phone Connected";
+                    statusEl.className = "text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400";
+                    
+                    // Hide QR code once paired to save space
+                    document.getElementById('qr-container').classList.add('hidden');
+                });
+
+                // Receive Scanned Data from Phone
+                conn.on('data', (data) => {
+                    addScannedItem(data);
+                    playBeep();
+                });
+
+                conn.on('close', () => {
+                    const statusEl = document.getElementById('pc-status');
+                    statusEl.innerText = "Disconnected";
+                    statusEl.className = "text-xs font-bold px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-400";
+                    document.getElementById('qr-container').classList.remove('hidden');
+                });
+            });
+        }
+
+        function addScannedItem(code) {
+            const emptyMsg = document.getElementById('empty-msg');
+            if (emptyMsg) emptyMsg.remove();
+
+            scanCount++;
+            document.getElementById('scan-count').innerText = scanCount;
+
+            const list = document.getElementById('scanned-list');
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            const item = document.createElement('div');
+            item.className = "flex items-center justify-between bg-slate-800 p-2.5 rounded-lg border border-slate-700 animate-fade-in";
+            item.innerHTML = `
+                <div class="overflow-hidden pr-2">
+                    <p class="text-sm font-mono font-semibold text-white truncate select-all">${escapeHtml(code)}</p>
+                    <p class="text-[10px] text-slate-400">${time}</p>
+                </div>
+                <button onclick="copyText('${escapeHtml(code)}', this)" class="shrink-0 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-xs rounded font-medium transition">
+                    Copy
+                </button>
+            `;
+            list.prepend(item);
+
+            // Auto-copy latest scan to clipboard (works if document is focused)
+            navigator.clipboard.writeText(code).catch(() => {});
+        }
+
+        function copyText(text, btn) {
+            navigator.clipboard.writeText(text);
+            const original = btn.innerText;
+            btn.innerText = "Copied!";
+            btn.classList.replace('bg-indigo-600', 'bg-emerald-600');
+            setTimeout(() => {
+                btn.innerText = original;
+                btn.classList.replace('bg-emerald-600', 'bg-indigo-600');
+            }, 1200);
+        }
+
+        function clearHistory() {
+            document.getElementById('scanned-list').innerHTML = '<p id="empty-msg" class="text-xs text-slate-500 text-center mt-20">No barcodes scanned yet...</p>';
+            scanCount = 0;
+            document.getElementById('scan-count').innerText = "0";
+        }
+
+        // ==========================================
+        // 2. MOBILE MODE LOGIC
+        // ==========================================
+        function startMobileMode() {
+            document.getElementById('mode-selection').classList.add('hidden');
+            document.getElementById('mobile-view').classList.remove('hidden');
+
+            peer = new Peer();
+
+            html5QrcodeScanner = new Html5Qrcode("reader");
+            const config = { fps: 15, qrbox: { width: 250, height: 180 } };
+
+            // Start Back Camera
+            html5QrcodeScanner.start({ facingMode: "environment" }, config, onMobileScanSuccess)
+            .catch(err => {
+                alert("Camera Error: Make sure you are using HTTPS (GitHub Pages) and granted camera permissions.\n" + err);
+            });
+        }
+
+        function onMobileScanSuccess(decodedText) {
+            const now = Date.now();
+            // Prevent duplicate rapid scans of the same code within 1.5 seconds
+            if (decodedText === lastScannedCode && (now - lastScanTime) < 1500) {
+                return;
+            }
+            lastScannedCode = decodedText;
+            lastScanTime = now;
+
+            // Step A: If not paired yet, look for the "PAIR:" QR code from the PC
+            if (!isPaired) {
+                if (decodedText.startsWith("PAIR:")) {
+                    const targetPeerId = decodedText.replace("PAIR:", "");
+                    connectToPC(targetPeerId);
+                } else {
+                    showMobileFeedback("Please scan the Pairing QR on your PC first!", true);
+                }
+                return;
+            }
+
+            // Step B: Once paired, send any scanned QR or Barcode to PC
+            if (conn && conn.open) {
+                conn.send(decodedText);
+                playBeep();
+                if (navigator.vibrate) navigator.vibrate(100); // Vibrate phone on scan
+                showMobileFeedback("Sent: " + decodedText, false);
+            }
+        }
+
+        function connectToPC(targetId) {
+            const statusEl = document.getElementById('mobile-status');
+            statusEl.innerText = "Connecting...";
+
+            conn = peer.connect(targetId);
+
+            conn.on('open', () => {
+                isPaired = true;
+                playBeep();
+                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                statusEl.innerText = "● Connected to PC (Ready to Scan)";
+                statusEl.className = "text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400";
+                showMobileFeedback("Paired! Now scan any Barcode or QR code.", false);
+            });
+
+            conn.on('close', () => {
+                isPaired = false;
+                statusEl.innerText = "Disconnected";
+                statusEl.className = "text-xs font-bold px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-400";
+            });
+        }
+
+        function showMobileFeedback(msg, isError) {
+            const fb = document.getElementById('mobile-feedback');
+            fb.innerText = msg;
+            fb.classList.remove('hidden', 'bg-emerald-500/20', 'text-emerald-300', 'bg-rose-500/20', 'text-rose-300');
+            if (isError) {
+                fb.classList.add('bg-rose-500/20', 'text-rose-300');
+            } else {
+                fb.classList.add('bg-emerald-500/20', 'text-emerald-300');
+            }
+            setTimeout(() => fb.classList.add('hidden'), 2500);
+        }
+
+        function stopMobileScanner() {
+            if (html5QrcodeScanner) {
+                html5QrcodeScanner.stop().then(() => location.reload()).catch(() => location.reload());
+            } else {
+                location.reload();
+            }
+        }
+
+        // Utility: Beep sound using Web Audio API
+        function playBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(880, ctx.currentTime);
+                osc.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.1);
+            } catch (e) {}
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.innerText = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
